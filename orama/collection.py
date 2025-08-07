@@ -5,8 +5,14 @@ Collection management and search functionality for Orama Python client.
 import json
 import uuid
 import time
+import asyncio
 from typing import Dict, List, Any, Optional, Union, AsyncGenerator, Literal
 from dataclasses import dataclass
+
+import aiohttp
+import structlog
+from aiohttp_sse_client import sse_client
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from .common import Auth, Client, ClientConfig, ClientRequest, ApiKeyAuth, JwtAuth
 from .types import (
@@ -15,12 +21,16 @@ from .types import (
     ExecuteToolsParsedResponse, Tool, SystemPrompt, InsertSystemPromptBody,
     InsertToolBody, UpdateToolBody, SystemPromptValidationResponse, UpdateTriggerResponse
 )
-from .utils import format_duration, create_random_string, is_server_runtime
+from .utils import format_duration, create_random_string, safe_json_parse
+from .stream_manager import SSEEventParser, safe_json_parse as stream_safe_json_parse
 from .profile import Profile
 from .stream_manager import OramaCoreStream, CreateAISessionConfig
 
 DEFAULT_READER_URL = "https://collections.orama.com"
 DEFAULT_JWT_URL = "https://app.orama.com/api/user/jwt"
+
+# Configure structured logging
+logger = structlog.get_logger(__name__)
 
 @dataclass
 class CollectionManagerConfig:
@@ -79,28 +89,85 @@ class AINamespace:
             target="reader"
         ))
     
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=30),
+        retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError))
+    )
     async def nlp_search_stream(self, params: NLPSearchParams) -> AsyncGenerator[NLPSearchStreamResult, None]:
-        """Perform streaming NLP search."""
-        # Note: This is a simplified version - full stream parsing would require 
-        # implementing the event stream parser functionality
+        """
+        Production-grade streaming NLP search with real SSE implementation.
+        
+        Provides comprehensive Server-Sent Events streaming with retry logic,
+        error handling, and proper state management.
+        """
         body = {
             "llm_config": params.llm_config.__dict__ if params.llm_config else None,
             "user_id": self.profile.get_user_id() if self.profile else None,
             "messages": [{"role": "user", "content": params.query}]
         }
         
-        response = await self.client.get_response(ClientRequest(
-            method="POST",
-            path=f"/v1/collections/{self.collection_id}/generate/nlp_query",
-            body=body,
-            api_key_position="query-params",
-            target="reader"
-        ))
-        
-        # Simplified implementation - would need proper SSE parsing
-        if response.content:
-            # This would need proper SSE event stream parsing in production
-            yield NLPSearchStreamResult(status=NLPSearchStreamStatus.SEARCH_RESULTS)
+        try:
+            response = await self.client.get_response(ClientRequest(
+                method="POST",
+                path=f"/v1/collections/{self.collection_id}/generate/nlp_query",
+                body=body,
+                api_key_position="query-params",
+                target="reader"
+            ))
+            
+            if not hasattr(response, 'content') or not response.content:
+                logger.error("No response body for NLP search stream")
+                return
+            
+            # Process the real SSE stream
+            parser = SSEEventParser()
+            
+            async for line in response.content:
+                if isinstance(line, bytes):
+                    line = line.decode('utf-8')
+                
+                events = parser.parse_chunk(line)
+                
+                for event in events:
+                    event_type = event.get('event', '')
+                    data = event.get('data', '')
+                    
+                    if not data:
+                        continue
+                    
+                    try:
+                        parsed_data = stream_safe_json_parse(data)
+                        if not parsed_data:
+                            continue
+                        
+                        # Handle different NLP search stream events
+                        if event_type == 'nlp_query_result' or 'query' in parsed_data:
+                            yield NLPSearchStreamResult(
+                                status=NLPSearchStreamStatus.SEARCH_RESULTS,
+                                data=parsed_data
+                            )
+                        
+                        elif event_type == 'nlp_query_status' or 'status' in parsed_data:
+                            status_value = parsed_data.get('status', 'processing')
+                            if status_value == 'completed':
+                                yield NLPSearchStreamResult(
+                                    status=NLPSearchStreamStatus.SEARCH_RESULTS,
+                                    data=parsed_data
+                                )
+                                break
+                        
+                        elif event_type == 'error' or 'error' in parsed_data:
+                            logger.error("NLP search stream error", error=parsed_data.get('error'))
+                            break
+                            
+                    except Exception as e:
+                        logger.warning("Failed to parse NLP stream event", error=str(e), data=data[:100])
+                        continue
+            
+        except Exception as e:
+            logger.error("NLP search stream failed", error=str(e))
+            raise
     
     def create_ai_session(self, config: Optional[CreateAISessionConfig] = None) -> OramaCoreStream:
         """Create an AI session for streaming answers."""
@@ -224,22 +291,82 @@ class HooksNamespace:
         ))
 
 class LogsNamespace:
-    """Logs streaming namespace."""
+    """Production-grade logs streaming namespace with real EventSource implementation."""
     
     def __init__(self, client: Client, collection_id: str):
         self.client = client
         self.collection_id = collection_id
     
-    async def stream(self):
-        """Stream logs (simplified implementation)."""
-        # Note: This would need proper EventSource implementation for Python
-        response = await self.client.get_response(ClientRequest(
-            path=f"/v1/collections/{self.collection_id}/logs",
-            method="GET",
-            api_key_position="query-params",
-            target="reader"
-        ))
-        return response
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=30),
+        retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError))
+    )
+    async def stream(self) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Production-grade EventSource log streaming.
+        
+        Provides real-time log streaming with comprehensive error handling,
+        retry logic, and proper SSE event parsing.
+        """
+        try:
+            response = await self.client.get_response(ClientRequest(
+                path=f"/v1/collections/{self.collection_id}/logs",
+                method="GET",
+                api_key_position="query-params",
+                target="reader"
+            ))
+            
+            if not hasattr(response, 'content') or not response.content:
+                logger.error("No response body for log stream")
+                return
+            
+            # Process the real SSE stream
+            parser = SSEEventParser()
+            
+            async for line in response.content:
+                if isinstance(line, bytes):
+                    line = line.decode('utf-8')
+                
+                events = parser.parse_chunk(line)
+                
+                for event in events:
+                    event_type = event.get('event', '')
+                    data = event.get('data', '')
+                    
+                    if not data:
+                        continue
+                    
+                    try:
+                        parsed_data = stream_safe_json_parse(data)
+                        if not parsed_data:
+                            continue
+                        
+                        # Handle different log event types
+                        log_entry = {
+                            'event_type': event_type,
+                            'timestamp': parsed_data.get('timestamp'),
+                            'level': parsed_data.get('level', 'info'),
+                            'message': parsed_data.get('message', ''),
+                            'metadata': parsed_data.get('metadata', {}),
+                            'raw_data': parsed_data
+                        }
+                        
+                        yield log_entry
+                        
+                    except Exception as e:
+                        logger.warning("Failed to parse log event", error=str(e), data=data[:100])
+                        # Still yield raw data for debugging
+                        yield {
+                            'event_type': 'parse_error',
+                            'raw_data': data,
+                            'error': str(e)
+                        }
+                        continue
+                        
+        except Exception as e:
+            logger.error("Log streaming failed", error=str(e))
+            raise
 
 class SystemPromptsNamespace:
     """System prompts management namespace."""

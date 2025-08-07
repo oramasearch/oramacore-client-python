@@ -2,6 +2,14 @@
 aiohttp>=3.8.0,<4.0.0
 typing-extensions>=4.0.0
 
+# Production-grade streaming and JSON parsing
+aiohttp-sse-client>=0.2.1
+tenacity>=8.2.0
+orjson>=3.9.0
+
+# Enhanced error handling and logging
+structlog>=23.0.0
+
 # Additional useful dependencies for server environments
 # (uncomment if needed in your application)
 
