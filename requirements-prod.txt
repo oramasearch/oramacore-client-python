@@ -1,0 +1,33 @@
+# Production dependencies with pinned versions for Orama Python client
+# Use this file for production deployments to ensure reproducible builds
+
+aiohttp==3.9.5
+typing-extensions==4.9.0
+
+# Optional production dependencies (uncomment if needed)
+
+# JSON schema validation
+# jsonschema==4.20.0
+
+# Enhanced HTTP performance
+# aiohttp[speedups]==3.9.5
+
+# Structured logging
+# structlog==23.2.0
+
+# Configuration validation
+# pydantic==2.5.3
+
+# Database connectors (choose based on your needs)
+# asyncpg==0.29.0
+# aiomysql==0.2.0  
+# aiosqlite==0.19.0
+
+# Redis for caching
+# aioredis==2.0.1
+
+# Production monitoring and observability
+# prometheus-client==0.19.0
+# opentelemetry-api==1.21.0
+# opentelemetry-sdk==1.21.0
+# opentelemetry-instrumentation-aiohttp-client==0.42b0

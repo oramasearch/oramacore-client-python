@@ -1,0 +1,13 @@
+include README.md
+include LICENSE
+include requirements.txt
+include requirements-dev.txt
+include requirements-prod.txt
+include requirements-optional.txt
+include install.py
+include TRANSLATION_SUMMARY.md
+recursive-include orama *.py
+recursive-include examples *.py
+recursive-include tests *.py
+global-exclude __pycache__
+global-exclude *.py[co]

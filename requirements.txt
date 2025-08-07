@@ -1,0 +1,30 @@
+# Core dependencies for Orama Python client
+aiohttp>=3.8.0,<4.0.0
+typing-extensions>=4.0.0
+
+# Additional useful dependencies for server environments
+# (uncomment if needed in your application)
+
+# For JSON schema validation (useful with tool parameters)
+# jsonschema>=4.0.0
+
+# For enhanced HTTP client features  
+# aiohttp[speedups]>=3.8.0
+
+# For logging and monitoring
+# structlog>=23.0.0
+
+# For configuration management
+# pydantic>=2.0.0
+
+# For async database operations (if storing sessions/profiles)
+# asyncpg>=0.28.0
+# aiomysql>=0.2.0
+# aiosqlite>=0.19.0
+
+# For Redis caching (if implementing request caching)
+# aioredis>=2.0.0
+
+# For development and testing (install with: pip install -r requirements-dev.txt)
+# pytest>=7.0.0
+# pytest-asyncio>=0.21.0
